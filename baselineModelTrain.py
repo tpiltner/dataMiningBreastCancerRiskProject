@@ -1,4 +1,4 @@
-import argparse
+=import argparse
 import json
 from pathlib import Path
 from datetime import datetime
@@ -487,7 +487,7 @@ def train_one_config_grid(cfg: Dict[str, Any], run_dir: Path, device: torch.devi
     for _, delta_feat_tmp, _, _, _ in train_loader:
         all_delta.append(delta_feat_tmp.cpu().numpy())
     all_delta = np.concatenate(all_delta, axis=0)
-    pca = PCA(n_components=32)  # try 32 first
+    pca = PCA(n_components=2)  # try 32 first
     pca.fit(all_delta)
     print("PCA fitted:", all_delta.shape, "→", 32)
 
@@ -682,7 +682,7 @@ def train_final(best_cfg: Dict[str, Any], final_dir: Path, device: torch.device)
     
     all_delta = np.concatenate(all_delta, axis=0)
     
-    pca = PCA(n_components=32)
+    pca = PCA(n_components=2)
     pca.fit(all_delta)
     
     print("PCA fitted (FINAL):", all_delta.shape, "→", 32)
