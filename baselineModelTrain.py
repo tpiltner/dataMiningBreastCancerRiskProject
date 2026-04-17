@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
+from sklearn.decomposition import PCA
 
 import numpy as np
 import torch
@@ -224,6 +225,7 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     pos_weight: Optional[torch.Tensor] = None,
+    pca: Optional[PCA] = None,
 ) -> Dict[str, float]:
     model.eval()
     all_probs, all_y, all_m = [], [], []
@@ -232,7 +234,12 @@ def evaluate(
 
     for imgs, delta_feat, has_prior_views, y, m in loader:
         imgs = imgs.to(device, dtype=torch.float32)
-        delta_feat = delta_feat.to(device, dtype=torch.float32)
+        if pca is not None:
+            delta_np = delta_feat.cpu().numpy()
+            delta_pca = pca.transform(delta_np)
+            delta_feat = torch.tensor(delta_pca, device=device, dtype=torch.float32)
+        else:
+            delta_feat = delta_feat.to(device, dtype=torch.float32)
         has_prior_views = has_prior_views.to(device, dtype=torch.float32)
         y = y.to(device, dtype=torch.float32)
         m = m.to(device, dtype=torch.float32)
@@ -425,6 +432,7 @@ def _optimizer_step(optimizer: torch.optim.Optimizer):
 
 # One grid run
 def train_one_config_grid(cfg: Dict[str, Any], run_dir: Path, device: torch.device) -> Dict[str, Any]:
+    
     run_dir.mkdir(parents=True, exist_ok=True)
 
     accum_steps = int(ACCUM_STEPS_GRID)
@@ -474,6 +482,15 @@ def train_one_config_grid(cfg: Dict[str, Any], run_dir: Path, device: torch.devi
         **_dl_kwargs(),
     )
 
+    # ===== PCA SETUP =====
+    all_delta = []
+    for _, delta_feat_tmp, _, _, _ in train_loader:
+        all_delta.append(delta_feat_tmp.cpu().numpy())
+    all_delta = np.concatenate(all_delta, axis=0)
+    pca = PCA(n_components=32)  # try 32 first
+    pca.fit(all_delta)
+    print("PCA fitted:", all_delta.shape, "→", 32)
+
     model = BaselineCurrentOnlyModel(
         pretrained_encoder=True,
         num_years=len(RISK_COLS),
@@ -502,7 +519,10 @@ def train_one_config_grid(cfg: Dict[str, Any], run_dir: Path, device: torch.devi
 
         for step, (imgs, delta_feat, has_prior_views, y, m) in enumerate(train_loader, start=1):
             imgs = imgs.to(device, dtype=torch.float32)
-            delta_feat = delta_feat.to(device, dtype=torch.float32)
+            # PCA
+            delta_np = delta_feat.cpu().numpy()
+            delta_pca = pca.transform(delta_np)
+            delta_feat = torch.tensor(delta_pca, device=device, dtype=torch.float32)
             has_prior_views = has_prior_views.to(device, dtype=torch.float32)
             y = y.to(device, dtype=torch.float32)
             m = m.to(device, dtype=torch.float32)
@@ -533,7 +553,7 @@ def train_one_config_grid(cfg: Dict[str, Any], run_dir: Path, device: torch.devi
 
         train_loss = float(running_loss / max(1, n_micro))
 
-        val_metrics = evaluate(model, val_loader, device, pos_weight=pos_weight)
+        val_metrics = evaluate(model, val_loader, device, pos_weight=pos_weight, pca=pca)
         sel_auc = float(val_metrics.get("mean_auc_3to5", float("nan")))
         sel_auprc = float(val_metrics.get("mean_auprc_3to5", float("nan")))
 
@@ -655,6 +675,18 @@ def train_final(best_cfg: Dict[str, Any], final_dir: Path, device: torch.device)
         freeze_encoder=True,
     ).to(device)
 
+    # PCA SETUP
+    all_delta = []
+    for _, delta_feat_tmp, _, _, _ in train_loader:
+        all_delta.append(delta_feat_tmp.cpu().numpy())
+    
+    all_delta = np.concatenate(all_delta, axis=0)
+    
+    pca = PCA(n_components=32)
+    pca.fit(all_delta)
+    
+    print("PCA fitted (FINAL):", all_delta.shape, "→", 32)
+
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(params, lr=float(best_cfg["lr"]), weight_decay=float(best_cfg["wd"]))
 
@@ -673,7 +705,10 @@ def train_final(best_cfg: Dict[str, Any], final_dir: Path, device: torch.device)
 
         for step, (imgs, delta_feat, has_prior_views, y, m) in enumerate(train_loader, start=1):
             imgs = imgs.to(device, dtype=torch.float32)
-            delta_feat = delta_feat.to(device, dtype=torch.float32)
+            # PCA
+            delta_np = delta_feat.cpu().numpy()
+            delta_pca = pca.transform(delta_np)
+            delta_feat = torch.tensor(delta_pca, device=device, dtype=torch.float32)
             has_prior_views = has_prior_views.to(device, dtype=torch.float32)
             y = y.to(device, dtype=torch.float32)
             m = m.to(device, dtype=torch.float32)
@@ -703,7 +738,7 @@ def train_final(best_cfg: Dict[str, Any], final_dir: Path, device: torch.device)
 
         train_loss = float(running_loss / max(1, n_micro))
 
-        val_metrics = evaluate(model, val_loader, device, pos_weight=pos_weight)
+        val_metrics = evaluate(model, val_loader, device, pos_weight=pos_weight, pca=pca)
         sel_auc = float(val_metrics.get("mean_auc_3to5", float("nan")))
         sel_auprc = float(val_metrics.get("mean_auprc_3to5", float("nan")))
 
